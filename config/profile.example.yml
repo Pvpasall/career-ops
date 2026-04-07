@@ -69,3 +69,16 @@ location:
   visa_status: "No sponsorship needed"
   # For remote roles outside your country:
   # onsite_availability: "1 week/month in any city"
+
+# (Optional) LLM provider for batch processing.
+# By default, career-ops uses Claude via `claude -p` (requires Claude subscription).
+# Uncomment to use a local Ollama instance instead — no API costs, full privacy.
+#
+# See docs/ollama.md for setup instructions and model recommendations.
+#
+# llm:
+#   provider: ollama          # claude (default) or ollama
+#   ollama:
+#     base_url: "http://localhost:11434"
+#     model: "llama3.1:8b"    # any model pulled with `ollama pull <model>`
+#     temperature: 0.7

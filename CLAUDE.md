@@ -255,6 +255,30 @@ Default modes are in `modes/` (English). Additional language-specific modes are 
 - **RULE: After each batch of evaluations, run `node merge-tracker.mjs`** to merge tracker additions and avoid duplications.
 - **RULE: NEVER create new entries in applications.md if company+role already exists.** Update the existing entry.
 
+## Ollama (Local LLM) Support
+
+The batch runner supports Ollama as an alternative provider for offline/private processing.
+
+**Scope:** Ollama only applies to `batch/batch-runner.sh`. Interactive sessions always use Claude Code.
+
+**How to use:**
+```bash
+./batch/batch-runner.sh --provider ollama
+# or
+CAREER_OPS_PROVIDER=ollama ./batch/batch-runner.sh
+```
+
+**Config:** `OLLAMA_BASE_URL` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `llama3.1:8b`), `OLLAMA_TEMPERATURE` (default `0.7`).
+
+**Limitations vs Claude workers:**
+- No PDF generation
+- No real-time comp/web research (uses training data)
+- No Playwright-based liveness checks
+
+**Check connectivity:** `npm run ollama:check`
+
+See `docs/ollama.md` for full setup guide and model recommendations.
+
 ### TSV Format for Tracker Additions
 
 Write one TSV file per evaluation to `batch/tracker-additions/{num}-{company-slug}.tsv`. Single line, 9 tab-separated columns:

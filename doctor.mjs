@@ -5,7 +5,7 @@
  * Checks all prerequisites and prints a pass/fail checklist.
  */
 
-import { existsSync, mkdirSync, readdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -149,9 +149,66 @@ function checkAutoDir(name) {
   }
 }
 
+/**
+ * Detect the configured LLM provider from config/profile.yml.
+ * Returns 'ollama' if llm.provider is set to ollama, otherwise 'claude'.
+ */
+function detectLLMProvider() {
+  const profilePath = join(projectRoot, 'config', 'profile.yml');
+  if (!existsSync(profilePath)) return 'claude';
+  try {
+    const content = readFileSync(profilePath, 'utf8');
+    const match = content.match(/^\s*provider\s*:\s*["']?(\w+)["']?\s*$/m);
+    return match?.[1] === 'ollama' ? 'ollama' : 'claude';
+  } catch {
+    return 'claude';
+  }
+}
+
+async function checkOllama() {
+  const baseUrl = (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
+  const model = process.env.OLLAMA_MODEL || 'llama3.1:8b';
+
+  try {
+    const resp = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) {
+      return {
+        pass: false,
+        label: `Ollama not reachable at ${baseUrl}`,
+        fix: ['Start Ollama: ollama serve', `Override URL: OLLAMA_BASE_URL=http://... npm run doctor`],
+      };
+    }
+
+    const data = await resp.json();
+    const models = (data.models || []).map((m) => m.name);
+    const hasModel = models.some((m) => m === model || m.startsWith(`${model}:`));
+
+    if (!hasModel) {
+      return {
+        pass: false,
+        label: `Ollama running but model '${model}' not found`,
+        fix: [
+          `Pull the model: ollama pull ${model}`,
+          `Or set OLLAMA_MODEL=<other-model> — available: ${models.slice(0, 5).join(', ') || '(none)'}`,
+        ],
+      };
+    }
+
+    return { pass: true, label: `Ollama running at ${baseUrl}, model '${model}' available` };
+  } catch {
+    return {
+      pass: false,
+      label: `Ollama not reachable at ${baseUrl}`,
+      fix: ['Start Ollama: ollama serve', `Override URL: OLLAMA_BASE_URL=http://... npm run doctor`],
+    };
+  }
+}
+
 async function main() {
   console.log('\ncareer-ops doctor');
   console.log('================\n');
+
+  const llmProvider = detectLLMProvider();
 
   const checks = [
     checkNodeVersion(),
@@ -165,6 +222,12 @@ async function main() {
     checkAutoDir('output'),
     checkAutoDir('reports'),
   ];
+
+  // Ollama check — only when configured as the LLM provider
+  if (llmProvider === 'ollama') {
+    console.log(`LLM provider: ollama\n`);
+    checks.push(await checkOllama());
+  }
 
   let failures = 0;
 
@@ -186,7 +249,10 @@ async function main() {
     console.log(`Result: ${failures} issue${failures === 1 ? '' : 's'} found. Fix them and run \`npm run doctor\` again.`);
     process.exit(1);
   } else {
-    console.log('Result: All checks passed. You\'re ready to go! Run `claude` to start.');
+    const startHint = llmProvider === 'ollama'
+      ? 'Run `./batch/batch-runner.sh --provider ollama` to process offers.'
+      : 'Run `claude` to start.';
+    console.log(`Result: All checks passed. You're ready to go! ${startHint}`);
     process.exit(0);
   }
 }

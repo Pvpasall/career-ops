@@ -25,11 +25,11 @@ DRY_RUN=false
 RETRY_FAILED=false
 START_FROM=0
 MAX_RETRIES=2
+PROVIDER="${CAREER_OPS_PROVIDER:-claude}"
 
 usage() {
   cat <<'USAGE'
 career-ops batch runner — process job offers in batch via claude -p workers
-Uses your default Claude model (Claude Max subscription).
 
 Usage: batch-runner.sh [OPTIONS]
 
@@ -39,12 +39,19 @@ Options:
   --retry-failed       Only retry offers marked as "failed" in state
   --start-from N       Start from offer ID N (skip earlier IDs)
   --max-retries N      Max retry attempts per offer (default: 2)
+  --provider PROVIDER  LLM provider: claude (default) or ollama
   -h, --help           Show this help
+
+Provider options:
+  claude   Uses 'claude -p' workers (requires Claude Max subscription).
+  ollama   Uses ollama-worker.mjs with a local Ollama instance.
+           Set OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_TEMPERATURE env vars.
+           Or set CAREER_OPS_PROVIDER=ollama in your environment.
 
 Files:
   batch-input.tsv      Input offers (id, url, source, notes)
   batch-state.tsv      Processing state (auto-managed)
-  batch-prompt.md      Prompt template for workers
+  batch-prompt.md      Prompt template for workers (claude only)
   logs/                Per-offer logs
   tracker-additions/   Tracker lines for post-batch merge
 
@@ -52,8 +59,14 @@ Examples:
   # Dry run to see pending offers
   ./batch-runner.sh --dry-run
 
-  # Process all pending
+  # Process all pending with Claude (default)
   ./batch-runner.sh
+
+  # Process with local Ollama (llama3.1:8b by default)
+  ./batch-runner.sh --provider ollama
+
+  # Process with Ollama using a specific model
+  OLLAMA_MODEL=mistral:7b ./batch-runner.sh --provider ollama
 
   # Retry only failed offers
   ./batch-runner.sh --retry-failed
@@ -71,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     --retry-failed) RETRY_FAILED=true; shift ;;
     --start-from) START_FROM="$2"; shift 2 ;;
     --max-retries) MAX_RETRIES="$2"; shift 2 ;;
+    --provider) PROVIDER="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -109,13 +123,40 @@ check_prerequisites() {
     exit 1
   fi
 
-  if [[ ! -f "$PROMPT_FILE" ]]; then
-    echo "ERROR: $PROMPT_FILE not found."
-    exit 1
-  fi
+  if [[ "$PROVIDER" == "claude" ]]; then
+    if [[ ! -f "$PROMPT_FILE" ]]; then
+      echo "ERROR: $PROMPT_FILE not found."
+      exit 1
+    fi
 
-  if ! command -v claude &>/dev/null; then
-    echo "ERROR: 'claude' CLI not found in PATH."
+    if ! command -v claude &>/dev/null; then
+      echo "ERROR: 'claude' CLI not found in PATH."
+      exit 1
+    fi
+  elif [[ "$PROVIDER" == "ollama" ]]; then
+    local ollama_url="${OLLAMA_BASE_URL:-http://localhost:11434}"
+    local worker_script
+    worker_script="$(cd "$SCRIPT_DIR/.." && pwd)/ollama-worker.mjs"
+
+    if [[ ! -f "$worker_script" ]]; then
+      echo "ERROR: ollama-worker.mjs not found at $worker_script."
+      exit 1
+    fi
+
+    if ! command -v node &>/dev/null; then
+      echo "ERROR: 'node' not found in PATH. Node.js 18+ is required for Ollama mode."
+      exit 1
+    fi
+
+    # Quick connectivity check
+    if ! curl -sf "${ollama_url}/api/tags" >/dev/null 2>&1; then
+      echo "ERROR: Ollama is not running or not reachable at ${ollama_url}."
+      echo "  Start Ollama with: ollama serve"
+      echo "  Override URL with: OLLAMA_BASE_URL=http://... ./batch-runner.sh --provider ollama"
+      exit 1
+    fi
+  else
+    echo "ERROR: Unknown provider '$PROVIDER'. Valid options: claude, ollama"
     exit 1
   fi
 
@@ -283,39 +324,50 @@ process_offer() {
   date=$(date +%Y-%m-%d)
   local jd_file="/tmp/batch-jd-${id}.txt"
 
-  echo "--- Processing offer #$id: $url (report $report_num, attempt $((retries + 1)))"
-
-  # Build the prompt with placeholders replaced
-  local prompt
-  prompt="Procesa esta oferta de empleo. Ejecuta el pipeline completo: evaluación A-F + report .md + PDF + tracker line."
-  prompt="$prompt URL: $url"
-  prompt="$prompt JD file: $jd_file"
-  prompt="$prompt Report number: $report_num"
-  prompt="$prompt Date: $date"
-  prompt="$prompt Batch ID: $id"
+  echo "--- Processing offer #$id: $url (report $report_num, attempt $((retries + 1)), provider: $PROVIDER)"
 
   local log_file="$LOGS_DIR/${report_num}-${id}.log"
-
-  # Prepare system prompt with placeholders resolved
-  local resolved_prompt="$BATCH_DIR/.resolved-prompt-${id}.md"
-  sed \
-    -e "s|{{URL}}|${url}|g" \
-    -e "s|{{JD_FILE}}|${jd_file}|g" \
-    -e "s|{{REPORT_NUM}}|${report_num}|g" \
-    -e "s|{{DATE}}|${date}|g" \
-    -e "s|{{ID}}|${id}|g" \
-    "$PROMPT_FILE" > "$resolved_prompt"
-
-  # Launch claude -p worker (uses default model from Claude Max subscription)
   local exit_code=0
-  claude -p \
-    --dangerously-skip-permissions \
-    --append-system-prompt-file "$resolved_prompt" \
-    "$prompt" \
-    > "$log_file" 2>&1 || exit_code=$?
 
-  # Cleanup resolved prompt
-  rm -f "$resolved_prompt"
+  if [[ "$PROVIDER" == "ollama" ]]; then
+    # Ollama worker — self-contained Node.js script
+    node "$PROJECT_DIR/ollama-worker.mjs" \
+      --id "$id" \
+      --url "$url" \
+      --report-num "$report_num" \
+      --date "$date" \
+      --jd-file "$jd_file" \
+      > "$log_file" 2>&1 || exit_code=$?
+  else
+    # Default: claude -p worker
+    local prompt
+    prompt="Procesa esta oferta de empleo. Ejecuta el pipeline completo: evaluación A-F + report .md + PDF + tracker line."
+    prompt="$prompt URL: $url"
+    prompt="$prompt JD file: $jd_file"
+    prompt="$prompt Report number: $report_num"
+    prompt="$prompt Date: $date"
+    prompt="$prompt Batch ID: $id"
+
+    # Prepare system prompt with placeholders resolved
+    local resolved_prompt="$BATCH_DIR/.resolved-prompt-${id}.md"
+    sed \
+      -e "s|{{URL}}|${url}|g" \
+      -e "s|{{JD_FILE}}|${jd_file}|g" \
+      -e "s|{{REPORT_NUM}}|${report_num}|g" \
+      -e "s|{{DATE}}|${date}|g" \
+      -e "s|{{ID}}|${id}|g" \
+      "$PROMPT_FILE" > "$resolved_prompt"
+
+    # Launch claude -p worker (uses default model from Claude Max subscription)
+    claude -p \
+      --dangerously-skip-permissions \
+      --append-system-prompt-file "$resolved_prompt" \
+      "$prompt" \
+      > "$log_file" 2>&1 || exit_code=$?
+
+    # Cleanup resolved prompt
+    rm -f "$resolved_prompt"
+  fi
 
   local completed_at
   completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -408,7 +460,7 @@ main() {
   fi
 
   echo "=== career-ops batch runner ==="
-  echo "Parallel: $PARALLEL | Max retries: $MAX_RETRIES"
+  echo "Parallel: $PARALLEL | Max retries: $MAX_RETRIES | Provider: $PROVIDER"
   echo "Input: $total_input offers"
   echo ""
 
