@@ -14,7 +14,7 @@
     "update": "node update-system.mjs apply",
     "rollback": "node update-system.mjs rollback",
     "liveness": "node check-liveness.mjs",
-    "ollama:check": "node -e \"fetch((process.env.OLLAMA_BASE_URL||'http://localhost:11434')+'/api/tags').then(r=>r.json()).then(d=>{console.log('Ollama reachable. Models:',d.models?.map(m=>m.name).join(', ')||'(none)');process.exit(0)}).catch(e=>{console.error('Ollama not reachable:',e.message);process.exit(1)})\""
+    "ollama:check": "node scripts/check-ollama.mjs"
   },
   "keywords": ["ai", "job-search", "claude-code", "career", "automation"],
   "author": "Santiago Fernández de Valderrama <hi@santifer.io> (https://santifer.io)",

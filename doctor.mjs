@@ -181,7 +181,7 @@ async function checkOllama() {
 
     const data = await resp.json();
     const models = (data.models || []).map((m) => m.name);
-    const hasModel = models.some((m) => m === model || m.startsWith(`${model}:`));
+    const hasModel = models.some((m) => m === model || m === `${model}:latest`);
 
     if (!hasModel) {
       return {

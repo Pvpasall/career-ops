@@ -150,11 +150,35 @@ function slugify(text) {
 }
 
 function extractJSON(text) {
-  // Look for the trailing JSON block produced by the model
-  const match = text.match(/\{[^{}]*"company"[^{}]*"score"[^{}]*\}/s);
-  if (!match) return null;
+  // Find the last occurrence of a JSON object containing "company" and "score".
+  // Walk backwards through all '{' positions to find a balanced match that
+  // parses cleanly — this handles nested objects in the model output.
+  let lastIdx = -1;
+  let searchFrom = 0;
+  while (true) {
+    const idx = text.indexOf('{', searchFrom);
+    if (idx === -1) break;
+    if (/"company"/.test(text.slice(idx)) && /"score"/.test(text.slice(idx))) {
+      lastIdx = idx;
+    }
+    searchFrom = idx + 1;
+  }
+  if (lastIdx === -1) return null;
+
+  // Find the matching closing brace (balanced)
+  let depth = 0;
+  let end = -1;
+  for (let i = lastIdx; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') {
+      depth--;
+      if (depth === 0) { end = i; break; }
+    }
+  }
+  if (end === -1) return null;
+
   try {
-    return JSON.parse(match[0]);
+    return JSON.parse(text.slice(lastIdx, end + 1));
   } catch {
     return null;
   }
@@ -354,7 +378,8 @@ After the markdown report, output ONLY the following JSON block (no extra text):
 
   // Ensure report starts with a proper header (model may skip it)
   let finalReport = reportSection;
-  if (!finalReport.match(/^#\s+Evaluaci/)) {
+  // Accept both Spanish "Evaluación" and English "Evaluation" headers
+  if (!finalReport.match(/^#\s+Evaluaci[oó]n|^#\s+Evaluation/i)) {
     finalReport =
       `# Evaluación: ${company} — ${role}\n\n` +
       `**Fecha:** ${date}\n` +
